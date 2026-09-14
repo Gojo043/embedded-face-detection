@@ -1,3 +1,13 @@
 .venv/
 __pycache__/
 *.pyc
+
+# Ignore real ONNX model files (too large for git)
+models/*.onnx
+
+# Runtime generated data
+data/db/
+data/enroll/
+
+# Junk
+$env
