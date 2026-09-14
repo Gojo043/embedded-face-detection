@@ -279,9 +279,9 @@ def main():
 
     # Pipeline (your working practical stack)
     det = Haar5ptDetector(
-        min_size=(70, 70),
+        min_size=(50, 50),
         smooth_alpha=0.80,
-        debug=False,
+        debug=True,
     )
 
     emb = ArcFaceEmbedderONNX(

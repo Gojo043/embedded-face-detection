@@ -5,6 +5,7 @@ from .config import CAMERA_INDEX
 
 
 def main():
+    print(f"Opening camera at index {CAMERA_INDEX}...")
     cap = cv2.VideoCapture(CAMERA_INDEX)
 
     if not cap.isOpened():

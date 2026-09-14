@@ -317,41 +317,60 @@ class Haar5ptDetector:
     def _facemesh_5pt(
         self,
         frame_bgr: np.ndarray,
+        haar_box: Optional[tuple] = None,
     ) -> Optional[np.ndarray]:
         H, W = frame_bgr.shape[:2]
 
-        rgb = cv2.cvtColor(
-            frame_bgr,
-            cv2.COLOR_BGR2RGB,
-        )
-
-        res = self.mp_face_mesh.process(rgb)
-
-        if not res.multi_face_landmarks:
-            return None
-
-        lm = res.multi_face_landmarks[0].landmark
-
-        idxs = [
-            self.IDX_LEFT_EYE,
-            self.IDX_RIGHT_EYE,
-            self.IDX_NOSE_TIP,
-            self.IDX_MOUTH_LEFT,
-            self.IDX_MOUTH_RIGHT,
-        ]
-
-        pts = []
-
-        for i in idxs:
-            p = lm[i]
-            pts.append(
-                [p.x * W, p.y * H]
-            )
-
-        kps = np.array(
-            pts,
-            dtype=np.float32,
-        )  # (5,2)
+        # If we have a Haar box, run FaceMesh on the ROI instead of full frame
+        # This is much more reliable for external/USB cameras
+        if haar_box is not None:
+            x, y, w, h = haar_box
+            # expand ROI generously
+            mx, my = int(0.4 * w), int(0.5 * h)
+            rx1 = max(0, x - mx)
+            ry1 = max(0, y - my)
+            rx2 = min(W, x + w + mx)
+            ry2 = min(H, y + h + my)
+            roi = frame_bgr[ry1:ry2, rx1:rx2]
+            if roi.shape[0] < 20 or roi.shape[1] < 20:
+                return None
+            rgb = cv2.cvtColor(roi, cv2.COLOR_BGR2RGB)
+            res = self.mp_face_mesh.process(rgb)
+            if not res.multi_face_landmarks:
+                return None
+            rH, rW = roi.shape[:2]
+            lm = res.multi_face_landmarks[0].landmark
+            idxs = [
+                self.IDX_LEFT_EYE,
+                self.IDX_RIGHT_EYE,
+                self.IDX_NOSE_TIP,
+                self.IDX_MOUTH_LEFT,
+                self.IDX_MOUTH_RIGHT,
+            ]
+            pts = []
+            for i in idxs:
+                p = lm[i]
+                # map back to full-frame coords
+                pts.append([p.x * rW + rx1, p.y * rH + ry1])
+            kps = np.array(pts, dtype=np.float32)
+        else:
+            rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            res = self.mp_face_mesh.process(rgb)
+            if not res.multi_face_landmarks:
+                return None
+            lm = res.multi_face_landmarks[0].landmark
+            idxs = [
+                self.IDX_LEFT_EYE,
+                self.IDX_RIGHT_EYE,
+                self.IDX_NOSE_TIP,
+                self.IDX_MOUTH_LEFT,
+                self.IDX_MOUTH_RIGHT,
+            ]
+            pts = []
+            for i in idxs:
+                p = lm[i]
+                pts.append([p.x * W, p.y * H])
+            kps = np.array(pts, dtype=np.float32)
 
         # Ensure left/right ordering for eyes & mouth
         # (FaceMesh usually already correct, but keep safe)
@@ -387,8 +406,8 @@ class Haar5ptDetector:
 
         x, y, w, h = faces[i].tolist()
 
-        # FaceMesh confirmation + 5pt
-        kps = self._facemesh_5pt(frame_bgr)
+        # FaceMesh confirmation + 5pt (run on ROI for reliability)
+        kps = self._facemesh_5pt(frame_bgr, haar_box=(x, y, w, h))
 
         if kps is None:
             # reject Haar false positives
@@ -401,7 +420,7 @@ class Haar5ptDetector:
 
         # OPTIONAL: require FaceMesh points to fall reasonably inside Haar box
         # (prevents random FaceMesh on background)
-        margin = 0.35  # generous, because Haar can be loose
+        margin = 0.60  # more generous margin for external cameras
 
         x1m = x - margin * w
         y1m = y - margin * h
@@ -415,7 +434,7 @@ class Haar5ptDetector:
             & (kps[:, 1] <= y2m)
         )
 
-        if inside.mean() < 0.60:
+        if inside.mean() < 0.40:  # lowered from 0.60 for more tolerance
             if self.debug:
                 print(
                     "[haar_5pt] FaceMesh points not consistent with Haar box -> reject"
@@ -426,8 +445,8 @@ class Haar5ptDetector:
         if not _kps_span_ok(
             kps,
             min_eye_dist=max(
-                10.0,
-                0.18 * w,
+                8.0,
+                0.12 * w,
             ),
         ):
             if self.debug:
