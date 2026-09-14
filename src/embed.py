@@ -30,6 +30,7 @@ import numpy as np
 import onnxruntime as ort
 
 from .haar_5pt import Haar5ptDetector, align_face_5pt
+from .config import CAMERA_INDEX
 
 
 # -------------------------
@@ -265,7 +266,7 @@ def cosine_similarity(
 
 
 def main():
-    cap = cv2.VideoCapture(0)
+    cap = cv2.VideoCapture(CAMERA_INDEX)
 
     det = Haar5ptDetector(
         min_size=(70, 70),

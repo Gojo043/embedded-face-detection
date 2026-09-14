@@ -41,6 +41,7 @@ import numpy as np
 
 from .haar_5pt import Haar5ptDetector, align_face_5pt
 from .embed import ArcFaceEmbedderONNX
+from .config import CAMERA_INDEX
 
 
 # -------------------------
@@ -319,7 +320,7 @@ def main():
     auto = False
     last_auto = 0.0
 
-    cap = cv2.VideoCapture(0)
+    cap = cv2.VideoCapture(CAMERA_INDEX)
 
     if not cap.isOpened():
         raise RuntimeError("Failed to open camera.")

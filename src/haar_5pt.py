@@ -28,6 +28,8 @@ except Exception as e:
     mp = None
     _MP_IMPORT_ERROR = e
 
+from .config import CAMERA_INDEX
+
 
 # -------------------------
 # Data
@@ -489,7 +491,7 @@ class Haar5ptDetector:
 
 
 def main():
-    cap = cv2.VideoCapture(0)
+    cap = cv2.VideoCapture(CAMERA_INDEX)
 
     det = Haar5ptDetector(
         min_size=(70, 70),

@@ -16,6 +16,8 @@ import cv2
 import numpy as np
 import mediapipe as mp
 
+from .config import CAMERA_INDEX
+
 
 # 5-point indices (FaceMesh)
 IDX_LEFT_EYE = 33
@@ -42,7 +44,7 @@ def main():
         min_tracking_confidence=0.5,
     )
 
-    cap = cv2.VideoCapture(1)
+    cap = cv2.VideoCapture(CAMERA_INDEX)
 
     if not cap.isOpened():
         raise RuntimeError("Camera not opened. Try camera index 0/1/2.")

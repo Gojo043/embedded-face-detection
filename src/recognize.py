@@ -44,6 +44,7 @@ except Exception as e:
 
 # Reuse your known-good alignment method (you said alignment is OK now)
 from .haar_5pt import align_face_5pt
+from .config import CAMERA_INDEX
 
 
 # -------------------------
@@ -709,7 +710,7 @@ def main():
         dist_thresh=0.34,
     )  # from your evaluate_new output
 
-    cap = cv2.VideoCapture(0)
+    cap = cv2.VideoCapture(CAMERA_INDEX)
 
     if not cap.isOpened():
         raise RuntimeError(
