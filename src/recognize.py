@@ -489,10 +489,10 @@ class HaarFaceMesh5pt:
         out: List[FaceDet] = []
 
         for (x, y, w, h) in faces:
-            # expand ROI a bit for FaceMesh stability
+            # expand ROI generously for FaceMesh stability (matches haar_5pt fix)
             mx, my = (
-                0.25 * w,
-                0.35 * h,
+                0.40 * w,
+                0.50 * h,
             )
 
             rx1, ry1, rx2, ry2 = _clip_xyxy(
@@ -531,8 +531,8 @@ class HaarFaceMesh5pt:
             if not _kps_span_ok(
                 kps,
                 min_eye_dist=max(
-                    10.0,
-                    0.18 * float(w),
+                    8.0,
+                    0.12 * float(w),
                 ),
             ):
                 if self.debug:
@@ -693,7 +693,7 @@ def main():
     )
 
     det = HaarFaceMesh5pt(
-        min_size=(70, 70),
+        min_size=(50, 50),
         debug=False,
     )
 
