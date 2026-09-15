@@ -277,8 +277,8 @@ class Haar5ptDetector:
                 static_image_mode=False,
                 max_num_faces=1,
                 refine_landmarks=True,
-                min_detection_confidence=0.5,
-                min_tracking_confidence=0.5,
+                min_detection_confidence=0.3,
+                min_tracking_confidence=0.3,
             )
         )
 
@@ -334,6 +334,8 @@ class Haar5ptDetector:
             roi = frame_bgr[ry1:ry2, rx1:rx2]
             if roi.shape[0] < 20 or roi.shape[1] < 20:
                 return None
+            # boost brightness/contrast for dark external cameras
+            roi = cv2.convertScaleAbs(roi, alpha=1.3, beta=20)
             rgb = cv2.cvtColor(roi, cv2.COLOR_BGR2RGB)
             res = self.mp_face_mesh.process(rgb)
             if not res.multi_face_landmarks:
@@ -418,29 +420,8 @@ class Haar5ptDetector:
 
             return []
 
-        # OPTIONAL: require FaceMesh points to fall reasonably inside Haar box
-        # (prevents random FaceMesh on background)
-        margin = 0.60  # more generous margin for external cameras
-
-        x1m = x - margin * w
-        y1m = y - margin * h
-        x2m = x + (1.0 + margin) * w
-        y2m = y + (1.0 + margin) * h
-
-        inside = (
-            (kps[:, 0] >= x1m)
-            & (kps[:, 0] <= x2m)
-            & (kps[:, 1] >= y1m)
-            & (kps[:, 1] <= y2m)
-        )
-
-        if inside.mean() < 0.40:  # lowered from 0.60 for more tolerance
-            if self.debug:
-                print(
-                    "[haar_5pt] FaceMesh points not consistent with Haar box -> reject"
-                )
-
-            return []
+        # Skip Haar-box consistency check — ROI approach already handles this
+        # kps are already mapped to full-frame coords from ROI
 
         if not _kps_span_ok(
             kps,
