@@ -7,7 +7,7 @@ models/*.onnx
 
 # Runtime generated data
 data/db/
-data/enroll/
+# data/enroll/ is tracked so enrollment crops are saved to git
 
 # Junk
 $env

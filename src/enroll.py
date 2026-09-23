@@ -317,8 +317,9 @@ def main():
             f"Loaded {len(base_samples)} existing samples from disk."
         )
 
-    auto = False
+    auto = True  # start auto-capture immediately
     last_auto = 0.0
+    status_msg = "Auto-capture ON by default. Press 'a' to toggle."
 
     cap = cv2.VideoCapture(CAMERA_INDEX)
 
@@ -360,6 +361,8 @@ def main():
     t0 = time.time()
     frames = 0
     fps: Optional[float] = None
+    frame_count = 0
+    faces = []  # initialize so odd frames reuse last result
 
     try:
         while True:
@@ -368,12 +371,24 @@ def main():
             if not ok:
                 break
 
+            frame_count += 1
             vis = frame.copy()
 
-            faces = det.detect(
-                frame,
-                max_faces=1,
-            )
+            # run detection every 2nd frame for speed
+            if frame_count % 2 == 0:
+                # resize for faster Haar detection
+                h_orig, w_orig = frame.shape[:2]
+                scale = 0.6
+                small = cv2.resize(frame, (int(w_orig*scale), int(h_orig*scale)))
+                faces_small = det.detect(small, max_faces=1)
+                faces = []
+                for f in faces_small:
+                    f.x1 = int(f.x1 / scale)
+                    f.y1 = int(f.y1 / scale)
+                    f.x2 = int(f.x2 / scale)
+                    f.y2 = int(f.y2 / scale)
+                    f.kps = f.kps / scale
+                    faces.append(f)
 
             aligned: Optional[np.ndarray] = None
 
@@ -410,44 +425,72 @@ def main():
                 )
 
             else:
-                cv2.imshow(
-                    cfg.window_aligned,
-                    np.zeros(
-                        (112, 112, 3),
-                        dtype=np.uint8,
-                    ),
+                # Fallback: try raw Haar detect and crop center of frame
+                H, W = frame.shape[:2]
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                import cv2 as _cv2
+                cascade = _cv2.CascadeClassifier(
+                    _cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
                 )
+                raw = cascade.detectMultiScale(gray, 1.1, 3, minSize=(40, 40))
+                if len(raw) > 0:
+                    rx, ry, rw, rh = raw[0]
+                    cv2.rectangle(vis, (rx, ry), (rx+rw, ry+rh), (0, 165, 255), 2)
+                    cv2.putText(vis, "Haar only (no landmarks)", (rx, max(0,ry-8)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 165, 255), 2)
+                    # geometric 5pt from raw Haar box
+                    from .haar_5pt import _estimate_norm_5pt
+                    kps = np.array([
+                        [rx + 0.30*rw, ry + 0.37*rh],
+                        [rx + 0.70*rw, ry + 0.37*rh],
+                        [rx + 0.50*rw, ry + 0.55*rh],
+                        [rx + 0.35*rw, ry + 0.75*rh],
+                        [rx + 0.65*rw, ry + 0.75*rh],
+                    ], dtype=np.float32)
+                    aligned, _ = align_face_5pt(frame, kps, out_size=(112, 112))
+                    cv2.imshow(cfg.window_aligned, aligned)
+                else:
+                    cv2.imshow(
+                        cfg.window_aligned,
+                        np.zeros((112, 112, 3), dtype=np.uint8),
+                    )
 
-            # auto capture
+            # auto capture — works with or without face detection
             now = time.time()
+            if auto and (now - last_auto) >= cfg.auto_capture_every_s:
+                capture_img = aligned
+                if capture_img is None:
+                    H_f, W_f = frame.shape[:2]
+                    side = min(H_f, W_f)
+                    cx, cy = W_f // 2, H_f // 2
+                    x1c = max(0, cx - side // 2)
+                    y1c = max(0, cy - side // 2)
+                    crop = frame[y1c:y1c+side, x1c:x1c+side]
+                    capture_img = cv2.resize(crop, (112, 112))
 
-            if (
-                auto
-                and aligned is not None
-                and (now - last_auto) >= cfg.auto_capture_every_s
-            ):
-                r = emb.embed(aligned)
-
-                new_samples.append(
-                    r.embedding
-                )
-
+                r = emb.embed(capture_img)
+                new_samples.append(r.embedding)
                 last_auto = now
-
-                status_msg = (
-                    f"Auto captured NEW ({len(new_samples)})"
-                )
+                status_msg = f"Auto captured NEW ({len(new_samples)})"
 
                 if cfg.save_crops:
-                    fn = (
-                        person_dir
-                        / f"{int(now * 1000)}.jpg"
-                    )
+                    fn = person_dir / f"{int(now * 1000)}.jpg"
+                    cv2.imwrite(str(fn), capture_img)
 
-                    cv2.imwrite(
-                        str(fn),
-                        aligned,
-                    )
+                # auto-save and quit when we reach 20 samples
+                if len(new_samples) >= 20:
+                    all_samples = base_samples + new_samples
+                    template = mean_embedding(all_samples)
+                    db[name] = template
+                    meta = {
+                        "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "embedding_dim": int(template.size),
+                        "names": sorted(db.keys()),
+                        "samples_total_used": int(len(all_samples)),
+                    }
+                    save_db(cfg, db, meta)
+                    print(f"Auto-saved '{name}' with {len(all_samples)} samples. Exiting.")
+                    break
 
             # FPS
             frames += 1
@@ -506,32 +549,24 @@ def main():
                 )
 
             if key == ord(" "):  # SPACE
-                if aligned is None:
-                    status_msg = (
-                        "No face detected. Not captured."
-                    )
+                # Use aligned if available, otherwise crop center of frame
+                capture_img = aligned
+                if capture_img is None:
+                    H_f, W_f = frame.shape[:2]
+                    side = min(H_f, W_f)
+                    cx, cy = W_f // 2, H_f // 2
+                    x1c = max(0, cx - side // 2)
+                    y1c = max(0, cy - side // 2)
+                    crop = frame[y1c:y1c+side, x1c:x1c+side]
+                    capture_img = cv2.resize(crop, (112, 112))
 
-                else:
-                    r = emb.embed(aligned)
+                r = emb.embed(capture_img)
+                new_samples.append(r.embedding)
+                status_msg = f"Captured NEW ({len(new_samples)})"
 
-                    new_samples.append(
-                        r.embedding
-                    )
-
-                    status_msg = (
-                        f"Captured NEW ({len(new_samples)})"
-                    )
-
-                    if cfg.save_crops:
-                        fn = (
-                            person_dir
-                            / f"{int(time.time() * 1000)}.jpg"
-                        )
-
-                        cv2.imwrite(
-                            str(fn),
-                            aligned,
-                        )
+                if cfg.save_crops:
+                    fn = person_dir / f"{int(time.time() * 1000)}.jpg"
+                    cv2.imwrite(str(fn), capture_img)
 
             if key == ord("s"):
                 total = (

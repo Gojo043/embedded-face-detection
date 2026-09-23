@@ -13,7 +13,7 @@ Run this script directly to find your camera index:
 """
 
 # ── Change this to your external camera index ──────────────────────────────
-CAMERA_INDEX: int = 2
+CAMERA_INDEX: int = 0
 # ───────────────────────────────────────────────────────────────────────────
 
 MODEL_PATH: str = "models/embedder_arcface.onnx"

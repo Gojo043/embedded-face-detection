@@ -207,9 +207,8 @@ def _kps_span_ok(
     min_eye_dist: float = 12.0,
 ) -> bool:
     """
-    Quick sanity filter on 5pt geometry:
-    - eye distance must be reasonable
-    - mouth should be below eyes (usually)
+    Quick sanity filter — only check eye distance.
+    Removed mouth/nose check to handle non-frontal camera angles.
     """
 
     k = kps.astype(np.float32)
@@ -221,10 +220,6 @@ def _kps_span_ok(
     )
 
     if eye_dist < min_eye_dist:
-        return False
-
-    # mouth should generally be below nose
-    if not (lm[1] > no[1] and rm[1] > no[1]):
         return False
 
     return True
@@ -276,7 +271,7 @@ class Haar5ptDetector:
             mp.solutions.face_mesh.FaceMesh(
                 static_image_mode=False,
                 max_num_faces=1,
-                refine_landmarks=True,
+                refine_landmarks=False,
                 min_detection_confidence=0.3,
                 min_tracking_confidence=0.3,
             )
@@ -300,7 +295,7 @@ class Haar5ptDetector:
         faces = self.face_cascade.detectMultiScale(
             gray,
             scaleFactor=1.1,
-            minNeighbors=5,
+            minNeighbors=3,
             flags=cv2.CASCADE_SCALE_IMAGE,
             minSize=self.min_size,
         )
@@ -314,6 +309,26 @@ class Haar5ptDetector:
         # faces are (x,y,w,h)
         return faces.astype(np.int32)
 
+    def _estimate_5pt_from_box(
+        self,
+        x: int, y: int, w: int, h: int,
+    ) -> np.ndarray:
+        """
+        Estimate 5 facial keypoints from a Haar bounding box.
+        Uses standard proportions of a frontal face.
+        Order: left_eye, right_eye, nose, left_mouth, right_mouth
+        """
+        x1, y1 = float(x), float(y)
+        bw, bh = float(w), float(h)
+
+        le  = [x1 + 0.30 * bw, y1 + 0.37 * bh]  # left eye
+        re  = [x1 + 0.70 * bw, y1 + 0.37 * bh]  # right eye
+        no  = [x1 + 0.50 * bw, y1 + 0.55 * bh]  # nose tip
+        lm  = [x1 + 0.35 * bw, y1 + 0.75 * bh]  # left mouth
+        rm  = [x1 + 0.65 * bw, y1 + 0.75 * bh]  # right mouth
+
+        return np.array([le, re, no, lm, rm], dtype=np.float32)
+
     def _facemesh_5pt(
         self,
         frame_bgr: np.ndarray,
@@ -321,67 +336,68 @@ class Haar5ptDetector:
     ) -> Optional[np.ndarray]:
         H, W = frame_bgr.shape[:2]
 
-        # If we have a Haar box, run FaceMesh on the ROI instead of full frame
-        # This is much more reliable for external/USB cameras
+        # Try FaceMesh on ROI first
         if haar_box is not None:
             x, y, w, h = haar_box
-            # expand ROI generously
-            mx, my = int(0.4 * w), int(0.5 * h)
-            rx1 = max(0, x - mx)
-            ry1 = max(0, y - my)
-            rx2 = min(W, x + w + mx)
-            ry2 = min(H, y + h + my)
+            cx, cy = x + w // 2, y + h // 2
+            half = int(max(w, h) * 0.75)
+            rx1 = max(0, cx - half)
+            ry1 = max(0, cy - half)
+            rx2 = min(W, cx + half)
+            ry2 = min(H, cy + half)
             roi = frame_bgr[ry1:ry2, rx1:rx2]
-            if roi.shape[0] < 20 or roi.shape[1] < 20:
-                return None
-            # boost brightness/contrast for dark external cameras
-            roi = cv2.convertScaleAbs(roi, alpha=1.3, beta=20)
-            rgb = cv2.cvtColor(roi, cv2.COLOR_BGR2RGB)
-            res = self.mp_face_mesh.process(rgb)
-            if not res.multi_face_landmarks:
-                return None
-            rH, rW = roi.shape[:2]
-            lm = res.multi_face_landmarks[0].landmark
-            idxs = [
-                self.IDX_LEFT_EYE,
-                self.IDX_RIGHT_EYE,
-                self.IDX_NOSE_TIP,
-                self.IDX_MOUTH_LEFT,
-                self.IDX_MOUTH_RIGHT,
-            ]
-            pts = []
-            for i in idxs:
-                p = lm[i]
-                # map back to full-frame coords
-                pts.append([p.x * rW + rx1, p.y * rH + ry1])
-            kps = np.array(pts, dtype=np.float32)
-        else:
-            rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-            res = self.mp_face_mesh.process(rgb)
-            if not res.multi_face_landmarks:
-                return None
-            lm = res.multi_face_landmarks[0].landmark
-            idxs = [
-                self.IDX_LEFT_EYE,
-                self.IDX_RIGHT_EYE,
-                self.IDX_NOSE_TIP,
-                self.IDX_MOUTH_LEFT,
-                self.IDX_MOUTH_RIGHT,
-            ]
-            pts = []
-            for i in idxs:
-                p = lm[i]
-                pts.append([p.x * W, p.y * H])
-            kps = np.array(pts, dtype=np.float32)
 
-        # Ensure left/right ordering for eyes & mouth
-        # (FaceMesh usually already correct, but keep safe)
+            if roi.shape[0] >= 20 and roi.shape[1] >= 20:
+                side = max(roi.shape[0], roi.shape[1])
+                square = cv2.resize(roi, (side, side))
+                square = cv2.convertScaleAbs(square, alpha=1.3, beta=20)
+                rgb = cv2.cvtColor(square, cv2.COLOR_BGR2RGB)
+                res = self.mp_face_mesh.process(rgb)
+
+                if res.multi_face_landmarks:
+                    rH, rW = roi.shape[:2]
+                    lm = res.multi_face_landmarks[0].landmark
+                    idxs = [
+                        self.IDX_LEFT_EYE, self.IDX_RIGHT_EYE,
+                        self.IDX_NOSE_TIP,
+                        self.IDX_MOUTH_LEFT, self.IDX_MOUTH_RIGHT,
+                    ]
+                    pts = []
+                    for i in idxs:
+                        p = lm[i]
+                        pts.append([p.x * rW + rx1, p.y * rH + ry1])
+                    kps = np.array(pts, dtype=np.float32)
+                    if kps[0, 0] > kps[1, 0]:
+                        kps[[0, 1]] = kps[[1, 0]]
+                    if kps[3, 0] > kps[4, 0]:
+                        kps[[3, 4]] = kps[[4, 3]]
+                    return kps
+
+            # FaceMesh failed — fall back to geometric estimate from Haar box
+            if self.debug:
+                print("[haar_5pt] FaceMesh failed -> using geometric 5pt estimate")
+            return self._estimate_5pt_from_box(x, y, w, h)
+
+        # No box provided — try full frame FaceMesh
+        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        res = self.mp_face_mesh.process(rgb)
+        if not res.multi_face_landmarks:
+            return None
+        lm = res.multi_face_landmarks[0].landmark
+        idxs = [
+            self.IDX_LEFT_EYE, self.IDX_RIGHT_EYE,
+            self.IDX_NOSE_TIP,
+            self.IDX_MOUTH_LEFT, self.IDX_MOUTH_RIGHT,
+        ]
+        pts = []
+        for i in idxs:
+            p = lm[i]
+            pts.append([p.x * W, p.y * H])
+        kps = np.array(pts, dtype=np.float32)
         if kps[0, 0] > kps[1, 0]:
             kps[[0, 1]] = kps[[1, 0]]
-
         if kps[3, 0] > kps[4, 0]:
             kps[[3, 4]] = kps[[4, 3]]
-
         return kps
 
     def detect(
@@ -426,8 +442,8 @@ class Haar5ptDetector:
         if not _kps_span_ok(
             kps,
             min_eye_dist=max(
-                8.0,
-                0.12 * w,
+                5.0,
+                0.08 * w,
             ),
         ):
             if self.debug:

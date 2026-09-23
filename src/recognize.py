@@ -516,10 +516,16 @@ class HaarFaceMesh5pt:
             if kps_roi is None:
                 if self.debug:
                     print(
-                        "[recognize] FaceMesh none for ROI -> skip"
+                        "[recognize] FaceMesh none for ROI -> using geometric estimate"
                     )
-
-                continue
+                # geometric fallback from Haar box
+                kps_roi = np.array([
+                    [0.30 * (rx2-rx1), 0.37 * (ry2-ry1)],
+                    [0.70 * (rx2-rx1), 0.37 * (ry2-ry1)],
+                    [0.50 * (rx2-rx1), 0.55 * (ry2-ry1)],
+                    [0.35 * (rx2-rx1), 0.75 * (ry2-ry1)],
+                    [0.65 * (rx2-rx1), 0.75 * (ry2-ry1)],
+                ], dtype=np.float32)
 
             # map ROI kps back to full-frame coords
             kps = kps_roi.copy()
@@ -707,8 +713,8 @@ def main():
 
     matcher = FaceDBMatcher(
         db=db,
-        dist_thresh=0.34,
-    )  # from your evaluate_new output
+        dist_thresh=0.50,
+    )  # raised threshold for robustness
 
     cap = cv2.VideoCapture(CAMERA_INDEX)
 
@@ -727,6 +733,8 @@ def main():
     fps: Optional[float] = None
 
     show_debug = False
+    frame_count = 0
+    faces = []  # initialize so odd frames reuse last result
 
     while True:
         ok, frame = cap.read()
@@ -734,10 +742,24 @@ def main():
         if not ok:
             break
 
-        faces = det.detect(
-            frame,
-            max_faces=5,
-        )
+        frame_count += 1
+
+        # resize frame for faster processing
+        h_orig, w_orig = frame.shape[:2]
+        scale = 0.5
+        small = cv2.resize(frame, (int(w_orig*scale), int(h_orig*scale)))
+
+        # only run detection every 2nd frame
+        if frame_count % 2 == 0:
+            faces = det.detect(small, max_faces=5)
+            # scale keypoints back to original size
+            for f in faces:
+                f.x1 = int(f.x1 / scale)
+                f.y1 = int(f.y1 / scale)
+                f.x2 = int(f.x2 / scale)
+                f.y2 = int(f.y2 / scale)
+                f.kps = f.kps / scale
+        # else reuse previous faces
 
         vis = frame.copy()
 
@@ -819,30 +841,41 @@ def main():
                 else (0, 0, 255)
             )
 
+            # draw name with large bold text + black background for readability
+            name_scale = 1.4
+            name_thickness = 3
+            (tw, th), _ = cv2.getTextSize(
+                line1, cv2.FONT_HERSHEY_SIMPLEX, name_scale, name_thickness
+            )
+            tx = f.x1
+            ty = max(th + 10, f.y1 - 10)
+            # black background behind name
+            cv2.rectangle(
+                vis,
+                (tx - 4, ty - th - 6),
+                (tx + tw + 4, ty + 4),
+                (0, 0, 0),
+                -1,
+            )
+            # name text
             cv2.putText(
                 vis,
                 line1,
-                (
-                    f.x1,
-                    max(0, f.y1 - 28),
-                ),
+                (tx, ty),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,
+                name_scale,
                 color,
-                2,
+                name_thickness,
             )
-
+            # small distance info below box
             cv2.putText(
                 vis,
                 line2,
-                (
-                    f.x1,
-                    max(0, f.y1 - 6),
-                ),
+                (f.x1, f.y2 + 20),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
+                0.55,
                 color,
-                2,
+                1,
             )
 
             # aligned preview thumbnails (stack)
